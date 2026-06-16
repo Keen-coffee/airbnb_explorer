@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Airbnb Explorer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>Airbnb Explorer</h1>
+      <p class="subtitle">All listings sorted by total price</p>
+    </div>
+  </header>
+
+  <main>
+    <form id="search-form" class="search-card">
+      <div class="form-row">
+        <div class="field-group grow">
+          <label for="location">Location</label>
+          <input id="location" name="location" type="text" placeholder="e.g. Miami, FL" required />
+        </div>
+        <div class="field-group">
+          <label for="checkin">Check-in</label>
+          <input id="checkin" name="checkin" type="date" />
+        </div>
+        <div class="field-group">
+          <label for="checkout">Check-out</label>
+          <input id="checkout" name="checkout" type="date" />
+        </div>
+        <div class="field-group narrow">
+          <label for="adults">Adults</label>
+          <input id="adults" name="adults" type="number" min="1" max="16" value="1" />
+        </div>
+        <div class="field-group narrow">
+          <label for="children">Children</label>
+          <input id="children" name="children" type="number" min="0" max="10" value="0" />
+        </div>
+      </div>
+
+      <details class="filters">
+        <summary>More filters</summary>
+        <div class="form-row" style="margin-top:12px">
+          <div class="field-group narrow">
+            <label for="min_bedrooms">Min bedrooms</label>
+            <input id="min_bedrooms" name="min_bedrooms" type="number" min="1" max="10" placeholder="Any" />
+          </div>
+          <div class="field-group narrow">
+            <label for="min_beds">Min beds</label>
+            <input id="min_beds" name="min_beds" type="number" min="1" max="20" placeholder="Any" />
+          </div>
+          <div class="field-group narrow">
+            <label for="min_bathrooms">Min baths</label>
+            <input id="min_bathrooms" name="min_bathrooms" type="number" min="0.5" max="10" step="0.5" placeholder="Any" />
+          </div>
+          <div class="field-group narrow">
+            <label for="price_min">Min $/night</label>
+            <input id="price_min" name="price_min" type="number" min="1" placeholder="Any" />
+          </div>
+          <div class="field-group narrow">
+            <label for="price_max">Max $/night</label>
+            <input id="price_max" name="price_max" type="number" min="1" placeholder="Any" />
+          </div>
+          <div class="field-group narrow">
+            <label for="infants">Infants</label>
+            <input id="infants" name="infants" type="number" min="0" max="5" value="0" />
+          </div>
+        </div>
+      </details>
+
+      <div class="form-actions">
+        <button type="submit" id="search-btn">Search</button>
+      </div>
+    </form>
+
+    <div id="status"></div>
+
+    <div id="results-wrap" class="hidden">
+      <div class="results-header-row">
+        <div id="results-header" class="results-header"></div>
+        <button id="api-btn" class="btn-api" type="button">API call</button>
+      </div>
+      <div id="api-panel" class="api-panel hidden">
+        <div class="api-panel-header">
+          <span class="api-label">GET</span>
+          <code id="api-url" class="api-url"></code>
+        </div>
+        <button id="api-copy" class="btn-copy" type="button">Copy URL</button>
+      </div>
+      <div class="table-wrap">
+        <table id="results-table">
+          <thead>
+            <tr>
+              <th class="col-rank">#</th>
+              <th class="col-name">Name</th>
+              <th class="col-beds">Beds</th>
+              <th class="col-baths">Baths</th>
+              <th class="col-rating" data-sort="avg_rating">Rating ↕</th>
+              <th class="col-price" data-sort="price">Price ↕</th>
+              <th class="col-link"></th>
+            </tr>
+          </thead>
+          <tbody id="results-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

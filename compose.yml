@@ -1,0 +1,12 @@
+services:
+  web:
+    image: airbnb_exp:latest
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    environment:
+      # Optional overrides — set these if Airbnb rotates credentials
+      # and auto-extraction breaks between container restarts.
+      # AIRBNB_API_KEY: ""
+      # AIRBNB_SEARCH_HASH: ""
+      - PYTHONUNBUFFERED=1
