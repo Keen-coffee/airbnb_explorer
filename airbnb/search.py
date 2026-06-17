@@ -4,13 +4,16 @@ import asyncio
 import base64
 import math
 import os
+import random
 import re
+import string
+import time
 from dataclasses import dataclass, asdict
 from typing import Any, Optional
 
 from curl_cffi.requests import AsyncSession
 
-from .client import BROWSER_HEADERS, get_api_key, get_search_hash, invalidate_cache
+from .client import BROWSER_HEADERS, get_api_key, get_search_hash, get_pdp_hash, invalidate_cache
 from .geocode import BoundingBox
 
 
@@ -23,15 +26,66 @@ TREATMENT_FLAGS = [
 # Max concurrent page requests
 _PAGE_CONCURRENCY = 4
 
+# Max concurrent PDP review-count requests
+_PDP_CONCURRENCY = 8
+
+# All StaysPdpSections fragment flags set to False — we only need the metadata
+# which always returns regardless of fragment selection
+_PDP_ALL_FALSE_FLAGS: dict = {k: False for k in [
+    "includeGpAccessibilityFeaturesFragment", "includeGpAdminBannerFragment",
+    "includeGpAmenitiesFragment", "includeGpAvailabilityCalendarInlineFragment",
+    "includeGpBathroomFragment", "includeGpBookItFragment",
+    "includeGpBookItNonExperiencedGuestFragment",
+    "includeGpCancellationPolicyPickerModalFragment", "includeGpDescriptionFragment",
+    "includeGpHeroFragment", "includeGpHighlightsCompactFragment",
+    "includeGpHighlightsFragment", "includeGpHostOverviewDefaultFragment",
+    "includeGpLocationPdpFragment", "includeGpLuxeServicesFragment",
+    "includeGpMarqueeBookItFloatingFooterFragment", "includeGpMarqueeBookItNavFragment",
+    "includeGpMarqueeBookItSidebarFragment", "includeGpMeetYourHostFragment",
+    "includeGpMessageBannerFragment", "includeGpNavFragment", "includeGpNavMobileFragment",
+    "includeGpNonExperiencedGuestLearnMoreModalFragment", "includeGpOverviewV2Fragment",
+    "includeGpPoliciesFragment", "includeGpReportToAirbnbFragment",
+    "includeGpReviewsEmptyFragment", "includeGpReviewsFragment",
+    "includeGpReviewsHighlightBannerFragment", "includeGpSeoLinksFragment",
+    "includeGpSleepingArrangementFragment", "includeGpSleepingArrangementImagesFragment",
+    "includeGpTitleFragment", "includeGpUgcTranslationFragment",
+    "includePdpMigrationAccessibilityFeaturesModalFragment",
+    "includePdpMigrationAccessibilityFeaturesPreviewCarouselFragment",
+    "includePdpMigrationAmenitiesFragment",
+    "includePdpMigrationAvailabilityCalendarInlineFragment",
+    "includePdpMigrationBathroomFragment", "includePdpMigrationBookItCalendarSheetFragment",
+    "includePdpMigrationBookItFloatingFooterFragment", "includePdpMigrationBookItNavFragment",
+    "includePdpMigrationBookItNonExperiencedGuestFragment",
+    "includePdpMigrationBookItSidebarFragment", "includePdpMigrationDescriptionFragment",
+    "includePdpMigrationHeroFragment", "includePdpMigrationHighlightsCompactFragment",
+    "includePdpMigrationHighlightsFragment", "includePdpMigrationHostOverviewDefaultFragment",
+    "includePdpMigrationLocationPdpFragment", "includePdpMigrationLuxeServicesFragment",
+    "includePdpMigrationMarqueeBookItFloatingFooterFragment",
+    "includePdpMigrationMarqueeBookItNavFragment",
+    "includePdpMigrationMarqueeBookItSidebarFragment",
+    "includePdpMigrationMeetYourHostFragment", "includePdpMigrationMessageBannerFragment",
+    "includePdpMigrationNavFragment", "includePdpMigrationNavMobileFragment",
+    "includePdpMigrationNonExperiencedGuestLearnMoreModalFragment",
+    "includePdpMigrationOnlyOnBookItFragment", "includePdpMigrationOnlyOnBookItNavFragment",
+    "includePdpMigrationOverviewV2Fragment", "includePdpMigrationPdpEducationFragment",
+    "includePdpMigrationPoliciesFragment", "includePdpMigrationReportToAirbnbFragment",
+    "includePdpMigrationReviewsEmptyFragment", "includePdpMigrationReviewsFragment",
+    "includePdpMigrationReviewsHighlightBannerFragment",
+    "includePdpMigrationSeoLinksFragment", "includePdpMigrationSleepingArrangementFragment",
+    "includePdpMigrationSleepingArrangementImagesFragment", "includePdpMigrationTitleFragment",
+]}
+
 
 @dataclass
 class Listing:
     id: str
     name: str
     url: str
-    beds: Optional[str]           # e.g. "2 beds", "Studio"
+    bedrooms: Optional[str]       # e.g. "1 bedroom", "Studio"
+    beds: Optional[str]           # e.g. "2 beds"
     bathrooms: Optional[str]      # e.g. "1 bath", "1.5 baths"
     avg_rating: Optional[float]
+    review_count: Optional[int]
     price_per_night: Optional[float]   # for sorting when no dates given
     total_price: Optional[float]       # for sorting when dates given
     total_price_display: Optional[str] # e.g. "$928 for 5 nights"
@@ -156,17 +210,41 @@ def _parse_result(result: dict) -> Optional[Listing]:
         except (ValueError, TypeError):
             pass
 
+    review_count: Optional[int] = None
+    for key in ("reviewsCount", "reviewCount", "totalReviewCount"):
+        val = result.get(key)
+        if val is not None:
+            try:
+                review_count = int(val)
+                break
+            except (ValueError, TypeError):
+                pass
+    if review_count is None:
+        # Some a11y labels include review count: "4.94 out of 5 average rating, 50 reviews"
+        a11y = result.get("avgRatingA11yLabel") or ""
+        m = re.search(r",\s*(\d+)\s+review", a11y, re.IGNORECASE)
+        if m:
+            try:
+                review_count = int(m.group(1))
+            except ValueError:
+                pass
+
     structured_price = result.get("structuredDisplayPrice") or {}
     price_per_night, total_price, total_price_display = _extract_price_info(structured_price)
 
-    # Bed / bath info from structuredContent.primaryLine typed items
+    # Bed / bath / bedroom info from structuredContent.primaryLine typed items
+    # BEDINFO can contain either "X beds" or "X bedrooms" depending on listing type
+    bedrooms: Optional[str] = None
     beds: Optional[str] = None
     bathrooms: Optional[str] = None
     for item in (result.get("structuredContent") or {}).get("primaryLine") or []:
         t = item.get("type", "")
         body = item.get("body") or ""
         if t == "BEDINFO" and body:
-            beds = body
+            if re.search(r"\bbedroom", body, re.IGNORECASE):
+                bedrooms = body
+            else:
+                beds = body
         elif t == "BATHROOMINFO" and body:
             bathrooms = body
 
@@ -174,9 +252,11 @@ def _parse_result(result: dict) -> Optional[Listing]:
         id=listing_id,
         name=name,
         url=f"https://www.airbnb.com/rooms/{listing_id}",
+        bedrooms=bedrooms,
         beds=beds,
         bathrooms=bathrooms,
         avg_rating=avg_rating,
+        review_count=review_count,
         price_per_night=price_per_night,
         total_price=total_price,
         total_price_display=total_price_display,
@@ -297,6 +377,107 @@ async def _fetch_page(
         return listings
 
 
+
+async def _fetch_one_review_count(
+    session: AsyncSession,
+    listing_id: str,
+    pdp_hash: str,
+    api_key: str,
+    checkin: Optional[str],
+    checkout: Optional[str],
+    sem: asyncio.Semaphore,
+) -> Optional[int]:
+    async with sem:
+        gid = base64.b64encode(f"StayListing:{listing_id}".encode()).decode()
+        demand_gid = base64.b64encode(f"DemandStayListing:{listing_id}".encode()).decode()
+        rand_suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=12))
+        impression_id = f"p3_{int(time.time())}_{rand_suffix}"
+
+        variables: dict = {
+            "id": gid,
+            "demandStayListingId": demand_gid,
+            "p3ImpressionId": impression_id,
+            "bypassTargetings": False,
+            "hostPreview": False,
+            "preview": False,
+            "privateBooking": False,
+            "pdpSectionsRequest": {
+                "adults": "1",
+                "checkIn": checkin or "",
+                "checkOut": checkout or "",
+                "layouts": ["SIDEBAR", "SINGLE_COLUMN"],
+            },
+            **_PDP_ALL_FALSE_FLAGS,
+        }
+
+        body = {
+            "operationName": "StaysPdpSections",
+            "extensions": {"persistedQuery": {"version": 1, "sha256Hash": pdp_hash}},
+            "variables": variables,
+        }
+
+        headers = {
+            **BROWSER_HEADERS,
+            "accept": "application/json",
+            "content-type": "application/json",
+            "x-airbnb-api-key": api_key,
+            "x-airbnb-graphql-platform": "web",
+            "x-airbnb-graphql-platform-client": "minimalist-niobe",
+            "x-niobe-short-circuited": "true",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "referer": f"https://www.airbnb.com/rooms/{listing_id}",
+        }
+
+        url = (
+            f"https://www.airbnb.com/api/v3/StaysPdpSections/{pdp_hash}"
+            "?operationName=StaysPdpSections&locale=en&currency=USD"
+        )
+
+        try:
+            resp = await session.post(url, json=body, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                return None
+            rc = _nested(
+                resp.json(),
+                "data", "presentation", "stayProductDetailPage",
+                "sections", "metadata", "sharingConfig", "reviewCount",
+            )
+            if rc is not None:
+                return int(rc)
+        except Exception:
+            pass
+        return None
+
+
+async def _fetch_review_counts(
+    listings: list[Listing],
+    api_key: str,
+    checkin: Optional[str],
+    checkout: Optional[str],
+) -> None:
+    """Batch-fetch review counts via StaysPdpSections for listings missing one."""
+    targets = [l for l in listings if l.review_count is None]
+    if not targets:
+        return
+    try:
+        pdp_hash = await get_pdp_hash()
+    except Exception:
+        return
+
+    sem = asyncio.Semaphore(_PDP_CONCURRENCY)
+    async with AsyncSession(impersonate="chrome124") as session:
+        counts = await asyncio.gather(*[
+            _fetch_one_review_count(session, l.id, pdp_hash, api_key, checkin, checkout, sem)
+            for l in targets
+        ])
+
+    for listing, count in zip(targets, counts):
+        if count is not None:
+            listing.review_count = count
+
+
 async def search(
     location: str,
     checkin: Optional[str] = None,
@@ -309,6 +490,8 @@ async def search(
     min_bathrooms: Optional[float] = None,
     price_min: Optional[int] = None,
     price_max: Optional[int] = None,
+    min_rating: Optional[float] = None,
+    min_reviews: Optional[int] = None,
 ) -> SearchResults:
     from .geocode import geocode
 
@@ -387,6 +570,14 @@ async def search(
         return (price == math.inf, price)
 
     unique.sort(key=sort_key)
+
+    # Enrich with review counts from PDP API (StaysSearch omits reviewCount entirely)
+    await _fetch_review_counts(unique, api_key, checkin, checkout)
+
+    if min_rating is not None:
+        unique = [l for l in unique if l.avg_rating is not None and l.avg_rating >= min_rating]
+    if min_reviews is not None:
+        unique = [l for l in unique if l.review_count is not None and l.review_count >= min_reviews]
 
     return SearchResults(
         location=bbox.display_name,

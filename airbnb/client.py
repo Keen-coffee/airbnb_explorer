@@ -19,7 +19,13 @@ BROWSER_HEADERS = {
 
 _api_key: str | None = None
 _search_hash: str | None = None
+_pdp_hash: str | None = None
 _lock = asyncio.Lock()
+
+_PDP_HASH_PATTERN = re.compile(
+    r"name:['\"]StaysPdpSections['\"].*?operationId:['\"]([a-f0-9]{64})['\"]",
+    re.DOTALL,
+)
 
 # Exact pattern seen in Airbnb's JS bundle:
 # name:'StaysSearch',type:'query',operationId:'<64-char-hex>'
@@ -123,8 +129,69 @@ async def get_search_hash() -> str:
         )
 
 
+async def get_pdp_hash(listing_id: str = "48620583") -> str:
+    """Extract the StaysPdpSections persisted query hash from Airbnb's PDP bundle.
+
+    The PDP bundle is only loaded on /rooms/ pages, so we fetch one listing page to
+    find the bundle URL, then extract the hash from it.
+    Set AIRBNB_PDP_HASH env var to skip auto-discovery.
+    """
+    import os
+    global _pdp_hash
+    if _pdp_hash:
+        return _pdp_hash
+    env = os.environ.get("AIRBNB_PDP_HASH")
+    if env:
+        _pdp_hash = env
+        return _pdp_hash
+
+    async with _lock:
+        if _pdp_hash:
+            return _pdp_hash
+
+        js_headers = {**BROWSER_HEADERS, "accept": "*/*", "sec-fetch-dest": "script"}
+        listing_headers = {**BROWSER_HEADERS, "referer": "https://www.airbnb.com/"}
+
+        try:
+            async with AsyncSession(impersonate="chrome124") as session:
+                # Fetch a listing page to discover the PDP route bundle URL
+                resp = await session.get(
+                    f"https://www.airbnb.com/rooms/{listing_id}",
+                    headers=listing_headers,
+                    timeout=15,
+                )
+                page = resp.text
+
+                # Find the PdpPlatformRoute bundle URL
+                pdp_bundle_urls = re.findall(
+                    r'(https://a0\.muscache\.com[^"\']+PdpPlatformRoute[^"\']+\.js)',
+                    page,
+                )
+                pdp_bundle_urls = list(dict.fromkeys(pdp_bundle_urls))
+
+                for url in pdp_bundle_urls:
+                    try:
+                        r = await session.get(url, headers=js_headers, timeout=15)
+                        m = _PDP_HASH_PATTERN.search(r.text)
+                        if m:
+                            _pdp_hash = m.group(1)
+                            return _pdp_hash
+                    except Exception:
+                        continue
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not fetch PDP page for hash discovery: {exc}"
+            ) from exc
+
+        raise RuntimeError(
+            "Could not find StaysPdpSections hash. "
+            "Set AIRBNB_PDP_HASH env var to override."
+        )
+
+
 def invalidate_cache() -> None:
     """Clear cached credentials so they are re-fetched on next request."""
-    global _api_key, _search_hash
+    global _api_key, _search_hash, _pdp_hash
     _api_key = None
     _search_hash = None
+    _pdp_hash = None

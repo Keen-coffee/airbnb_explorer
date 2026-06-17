@@ -30,6 +30,8 @@ async def api_search(
     bathrooms: Annotated[Optional[float], Query(alias="min_bathrooms", ge=0.5)] = None,
     price_min: Annotated[Optional[int], Query(ge=1)] = None,
     price_max: Annotated[Optional[int], Query(ge=1)] = None,
+    min_rating: Annotated[Optional[float], Query(ge=1.0, le=5.0)] = None,
+    min_reviews: Annotated[Optional[int], Query(ge=1)] = None,
 ) -> JSONResponse:
     try:
         results: SearchResults = await search(
@@ -44,6 +46,8 @@ async def api_search(
             min_bathrooms=bathrooms,
             price_min=price_min,
             price_max=price_max,
+            min_rating=min_rating,
+            min_reviews=min_reviews,
         )
         return JSONResponse(
             content={
@@ -60,6 +64,7 @@ async def api_search(
         return JSONResponse(status_code=502, content={"error": str(exc)})
     except Exception as exc:
         return JSONResponse(status_code=500, content={"error": f"Unexpected error: {exc}"})
+
 
 
 @app.get("/health")
