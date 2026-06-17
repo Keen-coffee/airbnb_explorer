@@ -61,9 +61,9 @@ async def api_search(
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
     except RuntimeError as exc:
-        return JSONResponse(status_code=502, content={"error": str(exc)})
+        return JSONResponse(status_code=422, content={"error": str(exc)})
     except Exception as exc:
-        return JSONResponse(status_code=500, content={"error": f"Unexpected error: {exc}"})
+        return JSONResponse(status_code=422, content={"error": f"Unexpected error: {exc}"})
 
 
 
