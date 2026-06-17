@@ -27,16 +27,19 @@ _PDP_HASH_PATTERN = re.compile(
     re.DOTALL,
 )
 
-# Exact pattern seen in Airbnb's JS bundle:
-# name:'StaysSearch',type:'query',operationId:'<64-char-hex>'
-_HASH_PATTERN = re.compile(
-    r"name:['\"]StaysSearch['\"].*?operationId:['\"]([a-f0-9]{64})['\"]",
-    re.DOTALL,
-)
-# Broader fallback patterns
-_HASH_FALLBACKS = [
-    re.compile(r"StaysSearch.{0,400}?([a-f0-9]{64})", re.DOTALL),
-    re.compile(r"([a-f0-9]{64}).{0,400}?StaysSearch", re.DOTALL),
+# Pattern variations to find the StaysSearch persisted query hash.
+# Airbnb minified bundles vary — try from most specific to broadest.
+_HASH_PATTERNS = [
+    # name:'StaysSearch',...,operationId:'<hash>'  (original format)
+    re.compile(r"name:['\"]StaysSearch['\"].*?operationId:['\"]([a-f0-9]{64})['\"]", re.DOTALL),
+    # operationId:'<hash>',...,name:'StaysSearch'  (reversed order)
+    re.compile(r"operationId:['\"]([a-f0-9]{64})['\"].*?name:['\"]StaysSearch['\"]", re.DOTALL),
+    # sha256Hash:'<hash>' near StaysSearch (persisted query inline reference)
+    re.compile(r"StaysSearch.{0,800}?sha256Hash['\"]?\s*:\s*['\"]([a-f0-9]{64})['\"]", re.DOTALL),
+    re.compile(r"sha256Hash['\"]?\s*:\s*['\"]([a-f0-9]{64})['\"].{0,800}?StaysSearch", re.DOTALL),
+    # Broader window around StaysSearch label
+    re.compile(r"StaysSearch.{0,1500}?([a-f0-9]{64})", re.DOTALL),
+    re.compile(r"([a-f0-9]{64}).{0,1500}?StaysSearch", re.DOTALL),
 ]
 
 
@@ -61,23 +64,30 @@ async def get_api_key() -> str:
 
 
 def _find_hash_in_text(text: str) -> str | None:
-    m = _HASH_PATTERN.search(text)
-    if m:
-        return m.group(1)
-    for pattern in _HASH_FALLBACKS:
+    for pattern in _HASH_PATTERNS:
         m = pattern.search(text)
         if m:
             return m.group(1)
     return None
 
 
-async def get_search_hash() -> str:
-    """Extract the StaysSearch persisted query SHA256 hash from Airbnb's JS bundles.
+def _collect_bundle_urls(page: str) -> list[str]:
+    """Collect all JS bundle URLs from an Airbnb page, deduped and ordered."""
+    raw: list[str] = []
+    raw += re.findall(r'src=["\x27](https?://[^"\x27]+\.js)["\x27]', page)
+    raw += re.findall(r'"(https://a0\.muscache\.com[^"]+\.js)"', page)
+    raw += re.findall(r"'(https://a0\.muscache\.com[^']+\.js)'", page)
+    seen: set[str] = set()
+    result: list[str] = []
+    for u in raw:
+        if u not in seen:
+            seen.add(u)
+            result.append(u)
+    return result
 
-    Airbnb bundles are served from a0.muscache.com (their CDN). The hash lives in
-    a bundle that exports the StaysSearch GraphQL operation definition with its
-    operationId field.
-    """
+
+async def get_search_hash() -> str:
+    """Extract the StaysSearch persisted query SHA256 hash from Airbnb's JS bundles."""
     global _search_hash
     if _search_hash:
         return _search_hash
@@ -87,33 +97,36 @@ async def get_search_hash() -> str:
 
         js_headers = {**BROWSER_HEADERS, "accept": "*/*", "sec-fetch-dest": "script"}
 
+        # Try multiple seed pages — different pages load different bundle sets
+        seed_urls = [
+            "https://www.airbnb.com/s/United-States/homes",
+            "https://www.airbnb.com/s/homes",
+            "https://www.airbnb.com",
+        ]
+
         async with AsyncSession(impersonate="chrome124") as session:
-            # Fetch the search page — it loads more relevant bundles than the homepage
-            resp = await session.get(
-                "https://www.airbnb.com/s/homes",
-                headers=BROWSER_HEADERS,
-                timeout=30,
-            )
-            page = resp.text
+            all_bundle_urls: list[str] = []
+            seen_bundles: set[str] = set()
 
-            # Check if the hash is inlined in the page (unlikely but fast)
-            found = _find_hash_in_text(page)
-            if found:
-                _search_hash = found
-                return _search_hash
+            for seed in seed_urls:
+                try:
+                    resp = await session.get(seed, headers=BROWSER_HEADERS, timeout=30)
+                    page = resp.text
 
-            # Collect all JS bundle URLs from the page (src= tags + embedded muscache refs)
-            raw_urls: list[str] = re.findall(r'src="(https?://[^"]+\.js)"', page)
-            raw_urls += re.findall(r'"(https://a0\.muscache\.com[^"]+\.js)"', page)
-            # Deduplicate, preserving order
-            seen: set[str] = set()
-            bundle_urls: list[str] = []
-            for u in raw_urls:
-                if u not in seen:
-                    seen.add(u)
-                    bundle_urls.append(u)
+                    # Check if hash is inlined directly in the page
+                    found = _find_hash_in_text(page)
+                    if found:
+                        _search_hash = found
+                        return _search_hash
 
-            for url in bundle_urls:
+                    for u in _collect_bundle_urls(page):
+                        if u not in seen_bundles:
+                            seen_bundles.add(u)
+                            all_bundle_urls.append(u)
+                except Exception:
+                    continue
+
+            for url in all_bundle_urls:
                 try:
                     r = await session.get(url, headers=js_headers, timeout=20)
                     found = _find_hash_in_text(r.text)
