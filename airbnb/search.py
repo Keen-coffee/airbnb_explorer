@@ -373,7 +373,11 @@ async def _fetch_page(
         resp = await session.post(url, json=body, headers=api_headers, timeout=30)
         if resp.status_code != 200:
             return []
-        listings, _ = _extract_page(resp.json())
+        try:
+            data = resp.json()
+        except Exception:
+            return []
+        listings, _ = _extract_page(data)
         return listings
 
 
@@ -536,7 +540,14 @@ async def search(
         if first_resp.status_code != 200:
             raise RuntimeError(f"Airbnb API error {first_resp.status_code}: {first_resp.text[:300]}")
 
-        first_data = first_resp.json()
+        try:
+            first_data = first_resp.json()
+        except Exception:
+            invalidate_cache()
+            raise RuntimeError(
+                "Airbnb returned a non-JSON response (bot detection / CAPTCHA). "
+                "Try again in a few seconds, or set AIRBNB_API_KEY and AIRBNB_SEARCH_HASH env vars."
+            )
         page1_listings, all_cursors = _extract_page(first_data)
 
         # all_cursors[0] is page 1 (already fetched), rest are subsequent pages

@@ -188,6 +188,10 @@
 
     try {
       const res = await fetch(`/api/search?${qs}`);
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        throw new Error(`Server error ${res.status}: unexpected non-JSON response (check server logs)`);
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Server error ${res.status}`);
 
