@@ -19,7 +19,17 @@ BROWSER_HEADERS = {
 
 _api_key: str | None = None
 _search_hash: str | None = None
-_lock = asyncio.Lock()
+# Lazy lock: created on first use inside a running event loop to avoid
+# Python 3.9 "Future attached to a different loop" errors.
+_lock: asyncio.Lock | None = None
+
+
+def _get_lock() -> asyncio.Lock:
+    global _lock
+    if _lock is None:
+        _lock = asyncio.Lock()
+    return _lock
+
 
 # Exact pattern seen in Airbnb's JS bundle:
 # name:'StaysSearch',type:'query',operationId:'<64-char-hex>'
@@ -38,7 +48,7 @@ async def get_api_key() -> str:
     global _api_key
     if _api_key:
         return _api_key
-    async with _lock:
+    async with _get_lock():
         if _api_key:
             return _api_key
         async with AsyncSession(impersonate="chrome124") as session:
@@ -65,6 +75,33 @@ def _find_hash_in_text(text: str) -> str | None:
     return None
 
 
+def _extract_bundle_urls(page: str) -> list[str]:
+    """Return deduplicated JS bundle URLs from a page (src= and href= attributes)."""
+    raw: list[str] = re.findall(r'(?:src|href)="(https?://[^"]+\.js)"', page)
+    raw += re.findall(r'"(https://a0\.muscache\.com[^"]+\.js)"', page)
+    seen: set[str] = set()
+    result: list[str] = []
+    for u in raw:
+        if u not in seen:
+            seen.add(u)
+            result.append(u)
+    return result
+
+
+async def _scan_bundles(session: AsyncSession, bundle_urls: list[str]) -> str | None:
+    """Fetch each bundle URL and return the first StaysSearch hash found."""
+    js_headers = {**BROWSER_HEADERS, "accept": "*/*", "sec-fetch-dest": "script"}
+    for url in bundle_urls:
+        try:
+            r = await session.get(url, headers=js_headers, timeout=20)
+            found = _find_hash_in_text(r.text)
+            if found:
+                return found
+        except Exception:
+            continue
+    return None
+
+
 async def get_search_hash() -> str:
     """Extract the StaysSearch persisted query SHA256 hash from Airbnb's JS bundles.
 
@@ -75,47 +112,34 @@ async def get_search_hash() -> str:
     global _search_hash
     if _search_hash:
         return _search_hash
-    async with _lock:
+    async with _get_lock():
         if _search_hash:
             return _search_hash
 
-        js_headers = {**BROWSER_HEADERS, "accept": "*/*", "sec-fetch-dest": "script"}
+        # Pages to try in order; /s/homes loads the most search-relevant bundles.
+        candidate_pages = [
+            "https://www.airbnb.com/s/homes",
+            "https://www.airbnb.com/s/united-states/homes",
+            "https://www.airbnb.com",
+        ]
 
         async with AsyncSession(impersonate="chrome124") as session:
-            # Fetch the search page — it loads more relevant bundles than the homepage
-            resp = await session.get(
-                "https://www.airbnb.com/s/homes",
-                headers=BROWSER_HEADERS,
-                timeout=30,
-            )
-            page = resp.text
+            for page_url in candidate_pages:
+                resp = await session.get(
+                    page_url, headers=BROWSER_HEADERS, timeout=30
+                )
+                page = resp.text
 
-            # Check if the hash is inlined in the page (unlikely but fast)
-            found = _find_hash_in_text(page)
-            if found:
-                _search_hash = found
-                return _search_hash
+                found = _find_hash_in_text(page)
+                if found:
+                    _search_hash = found
+                    return _search_hash
 
-            # Collect all JS bundle URLs from the page (src= tags + embedded muscache refs)
-            raw_urls: list[str] = re.findall(r'src="(https?://[^"]+\.js)"', page)
-            raw_urls += re.findall(r'"(https://a0\.muscache\.com[^"]+\.js)"', page)
-            # Deduplicate, preserving order
-            seen: set[str] = set()
-            bundle_urls: list[str] = []
-            for u in raw_urls:
-                if u not in seen:
-                    seen.add(u)
-                    bundle_urls.append(u)
-
-            for url in bundle_urls:
-                try:
-                    r = await session.get(url, headers=js_headers, timeout=20)
-                    found = _find_hash_in_text(r.text)
-                    if found:
-                        _search_hash = found
-                        return _search_hash
-                except Exception:
-                    continue
+                bundle_urls = _extract_bundle_urls(page)
+                found = await _scan_bundles(session, bundle_urls)
+                if found:
+                    _search_hash = found
+                    return _search_hash
 
         raise RuntimeError(
             "Could not find StaysSearch hash in Airbnb bundles. "

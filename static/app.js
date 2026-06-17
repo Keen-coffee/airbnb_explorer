@@ -44,17 +44,28 @@
     return `<span class="rating-pill"><span class="star">★</span>${Number(l.avg_rating).toFixed(2)}</span>`;
   }
 
+  function dash(val) {
+    return val ? esc(val) : '<span style="color:var(--muted)">—</span>';
+  }
+
+  function formatReviews(l) {
+    if (l.review_count == null) return '<span style="color:var(--muted)">—</span>';
+    return esc(String(l.review_count));
+  }
+
   function renderRows(listings) {
     if (!listings.length) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:32px">No listings found.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:32px">No listings found.</td></tr>';
       return;
     }
     tbody.innerHTML = listings.map((l, i) => `
       <tr>
         <td class="col-rank">${i + 1}</td>
         <td class="col-name"><div class="listing-name">${esc(l.name)}</div></td>
-        <td class="col-beds">${l.beds ? esc(l.beds) : '<span style="color:var(--muted)">—</span>'}</td>
-        <td class="col-baths">${l.bathrooms ? esc(l.bathrooms) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td class="col-bedrooms">${dash(l.bedrooms)}</td>
+        <td class="col-beds">${dash(l.beds)}</td>
+        <td class="col-baths">${dash(l.bathrooms)}</td>
+        <td class="col-reviews">${formatReviews(l)}</td>
         <td class="col-rating">${formatRating(l)}</td>
         <td class="col-price">${formatPrice(l)}</td>
         <td class="col-link"><a class="btn-view" href="${esc(l.url)}" target="_blank" rel="noopener">View →</a></td>
@@ -102,8 +113,10 @@
       <tr class="skeleton-row">
         <td><div class="skel" style="width:24px"></div></td>
         <td><div class="skel" style="width:75%"></div></td>
+        <td><div class="skel" style="width:60px"></div></td>
         <td><div class="skel" style="width:40px"></div></td>
         <td><div class="skel" style="width:40px"></div></td>
+        <td><div class="skel" style="width:36px"></div></td>
         <td><div class="skel" style="width:36px"></div></td>
         <td><div class="skel" style="width:70px"></div></td>
         <td><div class="skel" style="width:56px;margin-left:auto"></div></td>
