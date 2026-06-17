@@ -26,8 +26,11 @@ TREATMENT_FLAGS = [
 # Max concurrent page requests
 _PAGE_CONCURRENCY = 4
 
-# Max concurrent PDP review-count requests
-_PDP_CONCURRENCY = 8
+# Max concurrent PDP review-count requests — keep low to avoid overwhelming home DNS
+_PDP_CONCURRENCY = 3
+
+# Max listings to enrich with PDP review counts
+_PDP_ENRICH_LIMIT = 40
 
 # All StaysPdpSections fragment flags set to False — we only need the metadata
 # which always returns regardless of fragment selection
@@ -462,7 +465,7 @@ async def _fetch_review_counts(
     checkout: Optional[str],
 ) -> None:
     """Batch-fetch review counts via StaysPdpSections for listings missing one."""
-    targets = [l for l in listings if l.review_count is None]
+    targets = [l for l in listings if l.review_count is None][:_PDP_ENRICH_LIMIT]
     if not targets:
         return
     try:
@@ -471,14 +474,20 @@ async def _fetch_review_counts(
         return
 
     sem = asyncio.Semaphore(_PDP_CONCURRENCY)
-    async with AsyncSession(impersonate="chrome124") as session:
-        counts = await asyncio.gather(*[
-            _fetch_one_review_count(session, l.id, pdp_hash, api_key, checkin, checkout, sem)
-            for l in targets
-        ])
+    try:
+        async with AsyncSession(impersonate="chrome124") as session:
+            counts = await asyncio.gather(
+                *[
+                    _fetch_one_review_count(session, l.id, pdp_hash, api_key, checkin, checkout, sem)
+                    for l in targets
+                ],
+                return_exceptions=True,
+            )
+    except Exception:
+        return
 
     for listing, count in zip(targets, counts):
-        if count is not None:
+        if isinstance(count, int):
             listing.review_count = count
 
 
@@ -583,7 +592,10 @@ async def search(
     unique.sort(key=sort_key)
 
     # Enrich with review counts from PDP API (StaysSearch omits reviewCount entirely)
-    await _fetch_review_counts(unique, api_key, checkin, checkout)
+    try:
+        await _fetch_review_counts(unique, api_key, checkin, checkout)
+    except Exception:
+        pass
 
     if min_rating is not None:
         unique = [l for l in unique if l.avg_rating is not None and l.avg_rating >= min_rating]
