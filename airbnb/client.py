@@ -20,7 +20,16 @@ BROWSER_HEADERS = {
 _api_key: str | None = None
 _search_hash: str | None = None
 _pdp_hash: str | None = None
-_lock = asyncio.Lock()
+# Lazy lock: created on first use inside a running event loop to avoid
+# Python 3.9 "Future attached to a different loop" errors.
+_lock: asyncio.Lock | None = None
+
+
+def _get_lock() -> asyncio.Lock:
+    global _lock
+    if _lock is None:
+        _lock = asyncio.Lock()
+    return _lock
 
 _PDP_HASH_PATTERN = re.compile(
     r"name:['\"]StaysPdpSections['\"].*?operationId:['\"]([a-f0-9]{64})['\"]",
@@ -47,7 +56,7 @@ async def get_api_key() -> str:
     global _api_key
     if _api_key:
         return _api_key
-    async with _lock:
+    async with _get_lock():
         if _api_key:
             return _api_key
         async with AsyncSession(impersonate="chrome124") as session:
@@ -91,19 +100,17 @@ async def get_search_hash() -> str:
     global _search_hash
     if _search_hash:
         return _search_hash
-    async with _lock:
+    async with _get_lock():
         if _search_hash:
             return _search_hash
 
-        js_headers = {**BROWSER_HEADERS, "accept": "*/*", "sec-fetch-dest": "script"}
-
-        # Try multiple seed pages — different pages load different bundle sets
         seed_urls = [
             "https://www.airbnb.com/s/United-States/homes",
             "https://www.airbnb.com/s/homes",
             "https://www.airbnb.com",
         ]
 
+        js_headers = {**BROWSER_HEADERS, "accept": "*/*", "sec-fetch-dest": "script"}
         async with AsyncSession(impersonate="chrome124") as session:
             all_bundle_urls: list[str] = []
             seen_bundles: set[str] = set()
@@ -158,7 +165,7 @@ async def get_pdp_hash(listing_id: str = "48620583") -> str:
         _pdp_hash = env
         return _pdp_hash
 
-    async with _lock:
+    async with _get_lock():
         if _pdp_hash:
             return _pdp_hash
 

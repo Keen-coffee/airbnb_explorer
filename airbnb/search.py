@@ -14,13 +14,19 @@ from typing import Any, Optional
 from curl_cffi.requests import AsyncSession
 
 from .client import BROWSER_HEADERS, get_api_key, get_search_hash, get_pdp_hash, invalidate_cache
-from .geocode import BoundingBox
 
 
 TREATMENT_FLAGS = [
     "feed_map_decouple_m11_treatment",
-    "stays_search_rehydration_treatment_desktop",
-    "stays_search_rehydration_treatment_web",
+    "recommended_amenities_2024_treatment_b",
+    "filter_redesign_2024_treatment",
+    "filter_reordering_2024_roomtype_treatment",
+    "p2_category_bar_removal_treatment",
+    "selected_filters_2024_treatment",
+    "recommended_filters_2024_treatment_b",
+    "m13_search_input_phase2_treatment",
+    "m13_search_input_services_enabled",
+    "m13_2025_experiences_p2_treatment",
 ]
 
 # Max concurrent page requests
@@ -84,8 +90,8 @@ class Listing:
     id: str
     name: str
     url: str
-    bedrooms: Optional[str]       # e.g. "1 bedroom", "Studio"
-    beds: Optional[str]           # e.g. "2 beds"
+    bedrooms: Optional[str]       # e.g. "2 bedrooms" (when API provides it)
+    beds: Optional[str]           # e.g. "2 king beds", "Studio"
     bathrooms: Optional[str]      # e.g. "1 bath", "1.5 baths"
     avg_rating: Optional[float]
     review_count: Optional[int]
@@ -206,12 +212,22 @@ def _parse_result(result: dict) -> Optional[Listing]:
         return None
 
     avg_rating: Optional[float] = None
-    rating_raw = result.get("avgRatingLocalized")
+    review_count: Optional[int] = None
+    rating_raw = result.get("avgRatingLocalized") or ""
     if rating_raw:
-        try:
-            avg_rating = float(rating_raw)
-        except (ValueError, TypeError):
-            pass
+        # Format is "4.96 (27)" or just "4.96" or "New"
+        m = re.match(r"([\d.]+)\s*\((\d+)\)", rating_raw)
+        if m:
+            try:
+                avg_rating = float(m.group(1))
+                review_count = int(m.group(2))
+            except (ValueError, TypeError):
+                pass
+        else:
+            try:
+                avg_rating = float(rating_raw)
+            except (ValueError, TypeError):
+                pass
 
     review_count: Optional[int] = None
     for key in ("reviewsCount", "reviewCount", "totalReviewCount"):
@@ -235,8 +251,9 @@ def _parse_result(result: dict) -> Optional[Listing]:
     structured_price = result.get("structuredDisplayPrice") or {}
     price_per_night, total_price, total_price_display = _extract_price_info(structured_price)
 
-    # Bed / bath / bedroom info from structuredContent.primaryLine typed items
-    # BEDINFO can contain either "X beds" or "X bedrooms" depending on listing type
+    # Bed / bath info from structuredContent.primaryLine typed items.
+    # BEDINFO sometimes returns "N bedrooms" (whole-home listings) or "N beds"/"N king beds".
+    # Split them so the UI can show separate Bedrooms and Beds columns.
     bedrooms: Optional[str] = None
     beds: Optional[str] = None
     bathrooms: Optional[str] = None
@@ -282,7 +299,7 @@ def _extract_page(data: dict) -> tuple[list[Listing], list[str]]:
 
 
 def _build_raw_params(
-    bbox: BoundingBox,
+    location: str,
     checkin: Optional[str],
     checkout: Optional[str],
     adults: int,
@@ -293,52 +310,55 @@ def _build_raw_params(
     min_bathrooms: Optional[float],
     price_min: Optional[int],
     price_max: Optional[int],
-) -> list[dict]:
-    params: list[dict] = [
+) -> tuple[list[dict], list[dict]]:
+    """Return (map_params, search_params). The search params add itemsPerGrid."""
+    base: list[dict] = [
         {"filterName": "cdnCacheSafe", "filterValues": ["false"]},
-        {"filterName": "channel", "filterValues": ["EXPLORE"]},
-        {"filterName": "datePickerType", "filterValues": ["calendar"]},
-        {"filterName": "source", "filterValues": ["structured_search_input_header"]},
-        {"filterName": "searchType", "filterValues": ["autocomplete_click"]},
-        {"filterName": "neLat", "filterValues": [str(bbox.ne_lat)]},
-        {"filterName": "neLng", "filterValues": [str(bbox.ne_lng)]},
-        {"filterName": "swLat", "filterValues": [str(bbox.sw_lat)]},
-        {"filterName": "swLng", "filterValues": [str(bbox.sw_lng)]},
-        {"filterName": "zoomLevel", "filterValues": ["12"]},
+        {"filterName": "query", "filterValues": [location]},
+        {"filterName": "refinementPaths", "filterValues": ["/homes"]},
+        {"filterName": "screenSize", "filterValues": ["large"]},
+        {"filterName": "tabId", "filterValues": ["home_tab"]},
+        {"filterName": "version", "filterValues": ["1.8.8"]},
     ]
 
     if checkin and checkout:
-        params.append({"filterName": "checkin", "filterValues": [checkin]})
-        params.append({"filterName": "checkout", "filterValues": [checkout]})
+        base.append({"filterName": "checkin", "filterValues": [checkin]})
+        base.append({"filterName": "checkout", "filterValues": [checkout]})
         try:
             from datetime import date
             nights = (date.fromisoformat(checkout) - date.fromisoformat(checkin)).days
             if nights > 0:
-                params.append({"filterName": "priceFilterNumNights", "filterValues": [str(nights)]})
+                base.append({"filterName": "priceFilterNumNights", "filterValues": [str(nights)]})
         except ValueError:
             pass
 
     if adults > 0:
-        params.append({"filterName": "adults", "filterValues": [str(adults)]})
+        base.append({"filterName": "adults", "filterValues": [str(adults)]})
     if children > 0:
-        params.append({"filterName": "children", "filterValues": [str(children)]})
+        base.append({"filterName": "children", "filterValues": [str(children)]})
     if infants > 0:
-        params.append({"filterName": "infants", "filterValues": [str(infants)]})
+        base.append({"filterName": "infants", "filterValues": [str(infants)]})
     if min_bedrooms:
-        params.append({"filterName": "min_bedrooms", "filterValues": [str(min_bedrooms)]})
+        base.append({"filterName": "min_bedrooms", "filterValues": [str(min_bedrooms)]})
     if min_beds:
-        params.append({"filterName": "min_beds", "filterValues": [str(min_beds)]})
+        base.append({"filterName": "min_beds", "filterValues": [str(min_beds)]})
     if min_bathrooms:
-        params.append({"filterName": "min_bathrooms", "filterValues": [str(min_bathrooms)]})
+        base.append({"filterName": "min_bathrooms", "filterValues": [str(min_bathrooms)]})
     if price_min:
-        params.append({"filterName": "price_min", "filterValues": [str(price_min)]})
+        base.append({"filterName": "price_min", "filterValues": [str(price_min)]})
     if price_max:
-        params.append({"filterName": "price_max", "filterValues": [str(price_max)]})
+        base.append({"filterName": "price_max", "filterValues": [str(price_max)]})
 
-    return params
+    search_params = base + [{"filterName": "itemsPerGrid", "filterValues": ["18"]}]
+    return base, search_params
 
 
-def _build_body(search_hash: str, raw_params: list[dict], cursor: Optional[str]) -> dict:
+def _build_body(
+    search_hash: str,
+    map_params: list[dict],
+    search_params: list[dict],
+    cursor: Optional[str],
+) -> dict:
     shared = {
         "cursor": cursor,
         "requestedPageType": "STAYS_SEARCH",
@@ -346,7 +366,6 @@ def _build_body(search_hash: str, raw_params: list[dict], cursor: Optional[str])
         "source": "structured_search_input_header",
         "searchType": "user_map_move",
         "treatmentFlags": TREATMENT_FLAGS,
-        "rawParams": raw_params,
     }
     return {
         "operationName": "StaysSearch",
@@ -356,8 +375,8 @@ def _build_body(search_hash: str, raw_params: list[dict], cursor: Optional[str])
             "includeMapResults": False,
             "isLeanTreatment": False,
             "aiSearchEnabled": False,
-            "staysMapSearchRequestV2": {**shared, "maxMapItems": 0},
-            "staysSearchRequest": {**shared, "maxMapItems": 9999},
+            "staysMapSearchRequestV2": {**shared, "rawParams": map_params, "maxMapItems": 0},
+            "staysSearchRequest": {**shared, "rawParams": search_params, "maxMapItems": 9999},
         },
     }
 
@@ -367,12 +386,13 @@ async def _fetch_page(
     url: str,
     api_headers: dict,
     search_hash: str,
-    raw_params: list[dict],
+    map_params: list[dict],
+    search_params: list[dict],
     cursor: Optional[str],
     sem: asyncio.Semaphore,
 ) -> list[Listing]:
     async with sem:
-        body = _build_body(search_hash, raw_params, cursor)
+        body = _build_body(search_hash, map_params, search_params, cursor)
         resp = await session.post(url, json=body, headers=api_headers, timeout=30)
         if resp.status_code != 200:
             return []
@@ -506,14 +526,11 @@ async def search(
     min_rating: Optional[float] = None,
     min_reviews: Optional[int] = None,
 ) -> SearchResults:
-    from .geocode import geocode
-
-    bbox = await geocode(location)
     search_hash = os.environ.get("AIRBNB_SEARCH_HASH") or await get_search_hash()
     api_key = os.environ.get("AIRBNB_API_KEY") or await get_api_key()
 
-    raw_params = _build_raw_params(
-        bbox, checkin, checkout, adults, children, infants,
+    map_params, search_params = _build_raw_params(
+        location, checkin, checkout, adults, children, infants,
         min_bedrooms, min_beds, min_bathrooms, price_min, price_max,
     )
 
@@ -538,7 +555,7 @@ async def search(
 
     async with AsyncSession(impersonate="chrome124") as session:
         # --- Page 1 ---
-        first_body = _build_body(search_hash, raw_params, None)
+        first_body = _build_body(search_hash, map_params, search_params, None)
         first_resp = await session.post(url, json=first_body, headers=api_headers, timeout=30)
 
         if first_resp.status_code in (401, 403):
@@ -567,7 +584,7 @@ async def search(
         if remaining_cursors:
             sem = asyncio.Semaphore(_PAGE_CONCURRENCY)
             tasks = [
-                _fetch_page(session, url, api_headers, search_hash, raw_params, cursor, sem)
+                _fetch_page(session, url, api_headers, search_hash, map_params, search_params, cursor, sem)
                 for cursor in remaining_cursors
             ]
             pages = await asyncio.gather(*tasks)
@@ -603,7 +620,7 @@ async def search(
         unique = [l for l in unique if l.review_count is not None and l.review_count >= min_reviews]
 
     return SearchResults(
-        location=bbox.display_name,
+        location=location,
         checkin=checkin,
         checkout=checkout,
         listings=unique,

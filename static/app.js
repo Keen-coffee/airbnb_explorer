@@ -53,6 +53,7 @@
     return val ? esc(val) : '<span style="color:var(--muted)">—</span>';
   }
 
+
   function renderRows(listings) {
     if (!listings.length) {
       tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:32px">No listings found.</td></tr>';
