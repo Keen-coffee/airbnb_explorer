@@ -19,6 +19,7 @@ BROWSER_HEADERS = {
 
 _api_key: str | None = None
 _search_hash: str | None = None
+_pdp_hash: str | None = None
 # Lazy lock: created on first use inside a running event loop to avoid
 # Python 3.9 "Future attached to a different loop" errors.
 _lock: asyncio.Lock | None = None
@@ -30,17 +31,24 @@ def _get_lock() -> asyncio.Lock:
         _lock = asyncio.Lock()
     return _lock
 
-
-# Exact pattern seen in Airbnb's JS bundle:
-# name:'StaysSearch',type:'query',operationId:'<64-char-hex>'
-_HASH_PATTERN = re.compile(
-    r"name:['\"]StaysSearch['\"].*?operationId:['\"]([a-f0-9]{64})['\"]",
+_PDP_HASH_PATTERN = re.compile(
+    r"name:['\"]StaysPdpSections['\"].*?operationId:['\"]([a-f0-9]{64})['\"]",
     re.DOTALL,
 )
-# Broader fallback patterns
-_HASH_FALLBACKS = [
-    re.compile(r"StaysSearch.{0,400}?([a-f0-9]{64})", re.DOTALL),
-    re.compile(r"([a-f0-9]{64}).{0,400}?StaysSearch", re.DOTALL),
+
+# Pattern variations to find the StaysSearch persisted query hash.
+# Airbnb minified bundles vary — try from most specific to broadest.
+_HASH_PATTERNS = [
+    # name:'StaysSearch',...,operationId:'<hash>'  (original format)
+    re.compile(r"name:['\"]StaysSearch['\"].*?operationId:['\"]([a-f0-9]{64})['\"]", re.DOTALL),
+    # operationId:'<hash>',...,name:'StaysSearch'  (reversed order)
+    re.compile(r"operationId:['\"]([a-f0-9]{64})['\"].*?name:['\"]StaysSearch['\"]", re.DOTALL),
+    # sha256Hash:'<hash>' near StaysSearch (persisted query inline reference)
+    re.compile(r"StaysSearch.{0,800}?sha256Hash['\"]?\s*:\s*['\"]([a-f0-9]{64})['\"]", re.DOTALL),
+    re.compile(r"sha256Hash['\"]?\s*:\s*['\"]([a-f0-9]{64})['\"].{0,800}?StaysSearch", re.DOTALL),
+    # Broader window around StaysSearch label
+    re.compile(r"StaysSearch.{0,1500}?([a-f0-9]{64})", re.DOTALL),
+    re.compile(r"([a-f0-9]{64}).{0,1500}?StaysSearch", re.DOTALL),
 ]
 
 
@@ -65,20 +73,19 @@ async def get_api_key() -> str:
 
 
 def _find_hash_in_text(text: str) -> str | None:
-    m = _HASH_PATTERN.search(text)
-    if m:
-        return m.group(1)
-    for pattern in _HASH_FALLBACKS:
+    for pattern in _HASH_PATTERNS:
         m = pattern.search(text)
         if m:
             return m.group(1)
     return None
 
 
-def _extract_bundle_urls(page: str) -> list[str]:
-    """Return deduplicated JS bundle URLs from a page (src= and href= attributes)."""
-    raw: list[str] = re.findall(r'(?:src|href)="(https?://[^"]+\.js)"', page)
+def _collect_bundle_urls(page: str) -> list[str]:
+    """Collect all JS bundle URLs from an Airbnb page, deduped and ordered."""
+    raw: list[str] = []
+    raw += re.findall(r'src=["\x27](https?://[^"\x27]+\.js)["\x27]', page)
     raw += re.findall(r'"(https://a0\.muscache\.com[^"]+\.js)"', page)
+    raw += re.findall(r"'(https://a0\.muscache\.com[^']+\.js)'", page)
     seen: set[str] = set()
     result: list[str] = []
     for u in raw:
@@ -88,27 +95,8 @@ def _extract_bundle_urls(page: str) -> list[str]:
     return result
 
 
-async def _scan_bundles(session: AsyncSession, bundle_urls: list[str]) -> str | None:
-    """Fetch each bundle URL and return the first StaysSearch hash found."""
-    js_headers = {**BROWSER_HEADERS, "accept": "*/*", "sec-fetch-dest": "script"}
-    for url in bundle_urls:
-        try:
-            r = await session.get(url, headers=js_headers, timeout=20)
-            found = _find_hash_in_text(r.text)
-            if found:
-                return found
-        except Exception:
-            continue
-    return None
-
-
 async def get_search_hash() -> str:
-    """Extract the StaysSearch persisted query SHA256 hash from Airbnb's JS bundles.
-
-    Airbnb bundles are served from a0.muscache.com (their CDN). The hash lives in
-    a bundle that exports the StaysSearch GraphQL operation definition with its
-    operationId field.
-    """
+    """Extract the StaysSearch persisted query SHA256 hash from Airbnb's JS bundles."""
     global _search_hash
     if _search_hash:
         return _search_hash
@@ -116,30 +104,44 @@ async def get_search_hash() -> str:
         if _search_hash:
             return _search_hash
 
-        # Pages to try in order; /s/homes loads the most search-relevant bundles.
-        candidate_pages = [
+        seed_urls = [
+            "https://www.airbnb.com/s/United-States/homes",
             "https://www.airbnb.com/s/homes",
-            "https://www.airbnb.com/s/united-states/homes",
             "https://www.airbnb.com",
         ]
 
+        js_headers = {**BROWSER_HEADERS, "accept": "*/*", "sec-fetch-dest": "script"}
         async with AsyncSession(impersonate="chrome124") as session:
-            for page_url in candidate_pages:
-                resp = await session.get(
-                    page_url, headers=BROWSER_HEADERS, timeout=30
-                )
-                page = resp.text
+            all_bundle_urls: list[str] = []
+            seen_bundles: set[str] = set()
 
-                found = _find_hash_in_text(page)
-                if found:
-                    _search_hash = found
-                    return _search_hash
+            for seed in seed_urls:
+                try:
+                    resp = await session.get(seed, headers=BROWSER_HEADERS, timeout=30)
+                    page = resp.text
 
-                bundle_urls = _extract_bundle_urls(page)
-                found = await _scan_bundles(session, bundle_urls)
-                if found:
-                    _search_hash = found
-                    return _search_hash
+                    # Check if hash is inlined directly in the page
+                    found = _find_hash_in_text(page)
+                    if found:
+                        _search_hash = found
+                        return _search_hash
+
+                    for u in _collect_bundle_urls(page):
+                        if u not in seen_bundles:
+                            seen_bundles.add(u)
+                            all_bundle_urls.append(u)
+                except Exception:
+                    continue
+
+            for url in all_bundle_urls:
+                try:
+                    r = await session.get(url, headers=js_headers, timeout=20)
+                    found = _find_hash_in_text(r.text)
+                    if found:
+                        _search_hash = found
+                        return _search_hash
+                except Exception:
+                    continue
 
         raise RuntimeError(
             "Could not find StaysSearch hash in Airbnb bundles. "
@@ -147,8 +149,69 @@ async def get_search_hash() -> str:
         )
 
 
+async def get_pdp_hash(listing_id: str = "48620583") -> str:
+    """Extract the StaysPdpSections persisted query hash from Airbnb's PDP bundle.
+
+    The PDP bundle is only loaded on /rooms/ pages, so we fetch one listing page to
+    find the bundle URL, then extract the hash from it.
+    Set AIRBNB_PDP_HASH env var to skip auto-discovery.
+    """
+    import os
+    global _pdp_hash
+    if _pdp_hash:
+        return _pdp_hash
+    env = os.environ.get("AIRBNB_PDP_HASH")
+    if env:
+        _pdp_hash = env
+        return _pdp_hash
+
+    async with _get_lock():
+        if _pdp_hash:
+            return _pdp_hash
+
+        js_headers = {**BROWSER_HEADERS, "accept": "*/*", "sec-fetch-dest": "script"}
+        listing_headers = {**BROWSER_HEADERS, "referer": "https://www.airbnb.com/"}
+
+        try:
+            async with AsyncSession(impersonate="chrome124") as session:
+                # Fetch a listing page to discover the PDP route bundle URL
+                resp = await session.get(
+                    f"https://www.airbnb.com/rooms/{listing_id}",
+                    headers=listing_headers,
+                    timeout=15,
+                )
+                page = resp.text
+
+                # Find the PdpPlatformRoute bundle URL
+                pdp_bundle_urls = re.findall(
+                    r'(https://a0\.muscache\.com[^"\']+PdpPlatformRoute[^"\']+\.js)',
+                    page,
+                )
+                pdp_bundle_urls = list(dict.fromkeys(pdp_bundle_urls))
+
+                for url in pdp_bundle_urls:
+                    try:
+                        r = await session.get(url, headers=js_headers, timeout=15)
+                        m = _PDP_HASH_PATTERN.search(r.text)
+                        if m:
+                            _pdp_hash = m.group(1)
+                            return _pdp_hash
+                    except Exception:
+                        continue
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not fetch PDP page for hash discovery: {exc}"
+            ) from exc
+
+        raise RuntimeError(
+            "Could not find StaysPdpSections hash. "
+            "Set AIRBNB_PDP_HASH env var to override."
+        )
+
+
 def invalidate_cache() -> None:
     """Clear cached credentials so they are re-fetched on next request."""
-    global _api_key, _search_hash
+    global _api_key, _search_hash, _pdp_hash
     _api_key = None
     _search_hash = None
+    _pdp_hash = None

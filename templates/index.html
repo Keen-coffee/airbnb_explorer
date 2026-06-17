@@ -63,6 +63,14 @@
             <input id="price_max" name="price_max" type="number" min="1" placeholder="Any" />
           </div>
           <div class="field-group narrow">
+            <label for="min_rating">Min rating</label>
+            <input id="min_rating" name="min_rating" type="number" min="1" max="5" step="0.1" placeholder="Any" />
+          </div>
+          <div class="field-group narrow">
+            <label for="min_reviews">Min reviews</label>
+            <input id="min_reviews" name="min_reviews" type="number" min="1" placeholder="Any" />
+          </div>
+          <div class="field-group narrow">
             <label for="infants">Infants</label>
             <input id="infants" name="infants" type="number" min="0" max="5" value="0" />
           </div>
@@ -99,6 +107,7 @@
               <th class="col-baths">Baths</th>
               <th class="col-reviews">Reviews</th>
               <th class="col-rating" data-sort="avg_rating">Rating ↕</th>
+              <th class="col-reviews" data-sort="review_count">Reviews ↕</th>
               <th class="col-price" data-sort="price">Price ↕</th>
               <th class="col-link"></th>
             </tr>

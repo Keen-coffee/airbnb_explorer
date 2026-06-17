@@ -44,14 +44,15 @@
     return `<span class="rating-pill"><span class="star">★</span>${Number(l.avg_rating).toFixed(2)}</span>`;
   }
 
+  function formatReviews(l) {
+    if (l.review_count == null) return '<span class="no-rating">—</span>';
+    return `<span class="review-count">${Number(l.review_count).toLocaleString()}</span>`;
+  }
+
   function dash(val) {
     return val ? esc(val) : '<span style="color:var(--muted)">—</span>';
   }
 
-  function formatReviews(l) {
-    if (l.review_count == null) return '<span style="color:var(--muted)">—</span>';
-    return esc(String(l.review_count));
-  }
 
   function renderRows(listings) {
     if (!listings.length) {
@@ -65,8 +66,8 @@
         <td class="col-bedrooms">${dash(l.bedrooms)}</td>
         <td class="col-beds">${dash(l.beds)}</td>
         <td class="col-baths">${dash(l.bathrooms)}</td>
-        <td class="col-reviews">${formatReviews(l)}</td>
         <td class="col-rating">${formatRating(l)}</td>
+        <td class="col-reviews">${formatReviews(l)}</td>
         <td class="col-price">${formatPrice(l)}</td>
         <td class="col-link"><a class="btn-view" href="${esc(l.url)}" target="_blank" rel="noopener">View →</a></td>
       </tr>
@@ -79,6 +80,9 @@
       if (sortKey === 'price') {
         av = a.total_price ?? a.price_per_night ?? Infinity;
         bv = b.total_price ?? b.price_per_night ?? Infinity;
+      } else if (sortKey === 'review_count') {
+        av = a.review_count ?? -Infinity;
+        bv = b.review_count ?? -Infinity;
       } else {
         av = a.avg_rating ?? -Infinity;
         bv = b.avg_rating ?? -Infinity;
@@ -117,7 +121,7 @@
         <td><div class="skel" style="width:40px"></div></td>
         <td><div class="skel" style="width:40px"></div></td>
         <td><div class="skel" style="width:36px"></div></td>
-        <td><div class="skel" style="width:36px"></div></td>
+        <td><div class="skel" style="width:44px"></div></td>
         <td><div class="skel" style="width:70px"></div></td>
         <td><div class="skel" style="width:56px;margin-left:auto"></div></td>
       </tr>
@@ -185,6 +189,10 @@
 
     try {
       const res = await fetch(`/api/search?${qs}`);
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        throw new Error(`Server error ${res.status}: unexpected non-JSON response (check server logs)`);
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Server error ${res.status}`);
 
