@@ -245,7 +245,8 @@ td {
 }
 
 .col-rank     { width: 36px; color: var(--muted); font-size: 0.8rem; text-align: right; padding-right: 8px; }
-.col-name     { min-width: 280px; }
+.col-name       { min-width: 280px; }
+th.col-name     { padding-left: calc(14px + 56px + 10px); }
 .col-bedrooms { width: 90px; white-space: nowrap; }
 .col-beds     { width: 80px; white-space: nowrap; }
 .col-baths    { width: 80px; white-space: nowrap; }
@@ -253,7 +254,6 @@ td {
 .col-reviews  { width: 76px; white-space: nowrap; }
 .col-price    { width: 160px; white-space: nowrap; }
 .col-coord    { width: 110px; white-space: nowrap; font-size: 0.8rem; }
-.col-link     { width: 110px; text-align: right; }
 
 .coord-link {
   color: var(--muted);
@@ -266,7 +266,9 @@ td {
   display: flex;
   align-items: center;
   gap: 10px;
+  text-decoration: none;
 }
+.listing-cell:hover .listing-name { color: var(--pink); }
 
 .listing-thumb {
   width: 56px;
@@ -284,6 +286,7 @@ td {
   font-weight: 600;
   color: var(--text);
   line-height: 1.3;
+  transition: color 0.15s;
 }
 
 .rating-pill {
@@ -309,19 +312,6 @@ td {
 }
 .no-price { color: var(--muted); font-size: 0.8rem; }
 
-.btn-view {
-  display: inline-block;
-  padding: 5px 12px;
-  background: var(--pink);
-  color: #fff;
-  border-radius: 6px;
-  text-decoration: none;
-  font-size: 0.8rem;
-  font-weight: 600;
-  white-space: nowrap;
-  transition: background 0.15s;
-}
-.btn-view:hover { background: var(--pink-hover); }
 
 /* Skeleton */
 .skeleton-row td { padding: 14px; }

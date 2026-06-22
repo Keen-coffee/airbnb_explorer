@@ -49,10 +49,6 @@
     return `<span class="review-count">${Number(l.review_count).toLocaleString()}</span>`;
   }
 
-  function dash(val) {
-    return val ? esc(val) : '<span style="color:var(--muted)">—</span>';
-  }
-
   function formatCoord(l) {
     if (l.latitude == null || l.longitude == null) return '<span style="color:var(--muted)">—</span>';
     const lat = Number(l.latitude).toFixed(2);
@@ -61,6 +57,9 @@
     return `<a class="coord-link" href="${esc(url)}" target="_blank" rel="noopener">${lat}, ${lng}</a>`;
   }
 
+  function dash(val) {
+    return val ? esc(val) : '<span style="color:var(--muted)">—</span>';
+  }
 
   function renderRows(listings) {
     if (!listings.length) {
@@ -71,10 +70,10 @@
       <tr>
         <td class="col-rank">${i + 1}</td>
         <td class="col-name">
-          <div class="listing-cell">
-            ${l.image_url ? `<img class="listing-thumb" src="${esc(l.image_url)}" alt="" loading="lazy" />` : '<div class="listing-thumb listing-thumb-placeholder"></div>'}
+          <a class="listing-cell" href="${esc(l.url)}" target="_blank" rel="noopener">
+            ${l.image_url ? `<img class="listing-thumb" src="${esc(l.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : '<div class="listing-thumb listing-thumb-placeholder"></div>'}
             <div class="listing-name">${esc(l.name)}</div>
-          </div>
+          </a>
         </td>
         <td class="col-bedrooms">${dash(l.bedrooms)}</td>
         <td class="col-beds">${dash(l.beds)}</td>
@@ -83,31 +82,32 @@
         <td class="col-reviews">${formatReviews(l)}</td>
         <td class="col-price">${formatPrice(l)}</td>
         <td class="col-coord">${formatCoord(l)}</td>
-        <td class="col-link"><a class="btn-view" href="${esc(l.url)}" target="_blank" rel="noopener">View →</a></td>
       </tr>
     `).join('');
   }
 
   function sortAndRender() {
-    const sorted = [...allListings].sort((a, b) => {
-      let av, bv;
-      if (sortKey === 'price') {
-        av = a.total_price ?? a.price_per_night ?? Infinity;
-        bv = b.total_price ?? b.price_per_night ?? Infinity;
-      } else if (sortKey === 'review_count') {
-        av = a.review_count ?? -Infinity;
-        bv = b.review_count ?? -Infinity;
-      } else {
-        av = a.avg_rating ?? -Infinity;
-        bv = b.avg_rating ?? -Infinity;
-      }
-      return sortDir === 'asc' ? av - bv : bv - av;
-    });
-    renderRows(sorted);
-    // Update header sort indicators
+    let listings = allListings;
+    if (sortKey) {
+      listings = [...allListings].sort((a, b) => {
+        let av, bv;
+        if (sortKey === 'price') {
+          av = a.total_price ?? a.price_per_night ?? Infinity;
+          bv = b.total_price ?? b.price_per_night ?? Infinity;
+        } else if (sortKey === 'review_count') {
+          av = a.review_count ?? -Infinity;
+          bv = b.review_count ?? -Infinity;
+        } else {
+          av = a.avg_rating ?? -Infinity;
+          bv = b.avg_rating ?? -Infinity;
+        }
+        return sortDir === 'asc' ? av - bv : bv - av;
+      });
+    }
+    renderRows(listings);
     document.querySelectorAll('thead th[data-sort]').forEach(th => {
       th.classList.remove('sorted-asc', 'sorted-desc');
-      if (th.dataset.sort === sortKey) {
+      if (sortKey && th.dataset.sort === sortKey) {
         th.classList.add(sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
       }
     });
@@ -138,7 +138,6 @@
         <td><div class="skel" style="width:44px"></div></td>
         <td><div class="skel" style="width:70px"></div></td>
         <td><div class="skel" style="width:80px"></div></td>
-        <td><div class="skel" style="width:56px;margin-left:auto"></div></td>
       </tr>
     `).join('');
     resultsWrap.classList.remove('hidden');
@@ -212,13 +211,12 @@
       if (!res.ok) throw new Error(data.error || `Server error ${res.status}`);
 
       allListings = data.listings;
-      const hasDates = data.checkin && data.checkout;
-      const priceLabel = hasDates ? 'total price' : 'nightly price';
-      resultsHeader.innerHTML = `<strong>${data.count}</strong> listings in <strong>${esc(data.location)}</strong>, sorted by ${priceLabel}`;
+      resultsHeader.innerHTML = `<strong>${data.count}</strong> listings in <strong>${esc(data.location)}</strong>`;
 
-      sortKey = 'price';
+      sortKey = null;
       sortDir = 'asc';
-      sortAndRender();
+      document.querySelectorAll('thead th[data-sort]').forEach(th => th.classList.remove('sorted-asc', 'sorted-desc'));
+      renderRows(allListings);
       updateApiPanel(qs);
       setStatus('');
     } catch (err) {
