@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import math
 import os
 import random
 import re
@@ -99,6 +98,9 @@ class Listing:
     total_price: Optional[float]       # for sorting when dates given
     total_price_display: Optional[str] # e.g. "$928 for 5 nights"
     currency: str
+    image_url: Optional[str]
+    latitude: Optional[float]
+    longitude: Optional[float]
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -268,6 +270,13 @@ def _parse_result(result: dict) -> Optional[Listing]:
         elif t == "BATHROOMINFO" and body:
             bathrooms = body
 
+    pictures = result.get("contextualPictures") or []
+    image_url: Optional[str] = pictures[0].get("picture") if pictures else None
+
+    coord = _nested(demand, "location", "coordinate")
+    latitude: Optional[float] = coord.get("latitude") if coord else None
+    longitude: Optional[float] = coord.get("longitude") if coord else None
+
     return Listing(
         id=listing_id,
         name=name,
@@ -281,6 +290,9 @@ def _parse_result(result: dict) -> Optional[Listing]:
         total_price=total_price,
         total_price_display=total_price_display,
         currency="USD",
+        image_url=image_url,
+        latitude=latitude,
+        longitude=longitude,
     )
 
 
@@ -598,15 +610,6 @@ async def search(
         if l.id not in seen_ids:
             seen_ids.add(l.id)
             unique.append(l)
-
-    # Sort by total price when available, else per-night; no-price listings go last
-    def sort_key(l: Listing) -> tuple:
-        price = l.total_price if l.total_price is not None else (
-            l.price_per_night if l.price_per_night is not None else math.inf
-        )
-        return (price == math.inf, price)
-
-    unique.sort(key=sort_key)
 
     # Enrich with review counts from PDP API (StaysSearch omits reviewCount entirely)
     try:

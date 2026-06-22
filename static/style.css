@@ -245,14 +245,40 @@ td {
 }
 
 .col-rank     { width: 36px; color: var(--muted); font-size: 0.8rem; text-align: right; padding-right: 8px; }
-.col-name     { min-width: 220px; }
+.col-name     { min-width: 280px; }
 .col-bedrooms { width: 90px; white-space: nowrap; }
 .col-beds     { width: 80px; white-space: nowrap; }
 .col-baths    { width: 80px; white-space: nowrap; }
 .col-rating   { width: 76px; white-space: nowrap; }
 .col-reviews  { width: 76px; white-space: nowrap; }
 .col-price    { width: 160px; white-space: nowrap; }
+.col-coord    { width: 110px; white-space: nowrap; font-size: 0.8rem; }
 .col-link     { width: 110px; text-align: right; }
+
+.coord-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+.coord-link:hover { color: var(--pink); text-decoration: underline; }
+
+.listing-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.listing-thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.listing-thumb-placeholder {
+  background: var(--border);
+}
 
 .listing-name {
   font-weight: 600;
