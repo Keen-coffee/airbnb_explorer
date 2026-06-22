@@ -53,6 +53,14 @@
     return val ? esc(val) : '<span style="color:var(--muted)">—</span>';
   }
 
+  function formatCoord(l) {
+    if (l.latitude == null || l.longitude == null) return '<span style="color:var(--muted)">—</span>';
+    const lat = Number(l.latitude).toFixed(2);
+    const lng = Number(l.longitude).toFixed(2);
+    const url = `https://www.google.com/maps?q=${l.latitude},${l.longitude}`;
+    return `<a class="coord-link" href="${esc(url)}" target="_blank" rel="noopener">${lat}, ${lng}</a>`;
+  }
+
 
   function renderRows(listings) {
     if (!listings.length) {
@@ -62,13 +70,19 @@
     tbody.innerHTML = listings.map((l, i) => `
       <tr>
         <td class="col-rank">${i + 1}</td>
-        <td class="col-name"><div class="listing-name">${esc(l.name)}</div></td>
+        <td class="col-name">
+          <div class="listing-cell">
+            ${l.image_url ? `<img class="listing-thumb" src="${esc(l.image_url)}" alt="" loading="lazy" />` : '<div class="listing-thumb listing-thumb-placeholder"></div>'}
+            <div class="listing-name">${esc(l.name)}</div>
+          </div>
+        </td>
         <td class="col-bedrooms">${dash(l.bedrooms)}</td>
         <td class="col-beds">${dash(l.beds)}</td>
         <td class="col-baths">${dash(l.bathrooms)}</td>
         <td class="col-rating">${formatRating(l)}</td>
         <td class="col-reviews">${formatReviews(l)}</td>
         <td class="col-price">${formatPrice(l)}</td>
+        <td class="col-coord">${formatCoord(l)}</td>
         <td class="col-link"><a class="btn-view" href="${esc(l.url)}" target="_blank" rel="noopener">View →</a></td>
       </tr>
     `).join('');
@@ -116,13 +130,14 @@
     tbody.innerHTML = Array.from({ length: 12 }).map(() => `
       <tr class="skeleton-row">
         <td><div class="skel" style="width:24px"></div></td>
-        <td><div class="skel" style="width:75%"></div></td>
+        <td><div style="display:flex;align-items:center;gap:10px"><div class="skel" style="width:56px;height:56px;border-radius:6px;flex-shrink:0"></div><div class="skel" style="width:60%"></div></div></td>
         <td><div class="skel" style="width:60px"></div></td>
         <td><div class="skel" style="width:40px"></div></td>
         <td><div class="skel" style="width:40px"></div></td>
         <td><div class="skel" style="width:36px"></div></td>
         <td><div class="skel" style="width:44px"></div></td>
         <td><div class="skel" style="width:70px"></div></td>
+        <td><div class="skel" style="width:80px"></div></td>
         <td><div class="skel" style="width:56px;margin-left:auto"></div></td>
       </tr>
     `).join('');
